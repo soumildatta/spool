@@ -10,7 +10,6 @@ Named for the thing that takes loose, tangled thread and winds it into something
 
 - Native Swift, single SPM executable, no Electron, no cloud. Everything runs against a **local** OpenAI-compatible model server (LM Studio, Ollama, mlx, llama.cpp).
 - Lives as a little thread spool in the menu bar (`NSStatusItem`, no dock icon). The spool winds — loose strands filling into a full barrel and back — while the model is thinking.
-- Started from the terminal like [quill](https://github.com/digimata/quill): the process detaches into its own session, so closing the terminal doesn't kill it.
 - Default model: **qwen3.5:9b** (Qwen3.5 9B) served by Ollama. Both the model name and server URL are plain text boxes in Settings, so swap in whatever fits your machine.
 - **Nothing runs unless you're using it.** Ollama isn't installed as a login item. When you start a job, Spool launches `ollama serve` itself if it isn't already running, and once the job finishes it evicts the model from memory (`keep_alive: 0`) and shuts down any server it started. Your RAM is yours again the moment the document is written. If you run your own Ollama server already, Spool leaves it running and only unloads the model.
 
