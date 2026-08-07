@@ -10,7 +10,7 @@ Named for the thing that takes loose, tangled thread and winds it into something
 
 - Native Swift, single SPM executable, no Electron, no cloud. Everything runs against a **local** OpenAI-compatible model server (LM Studio, Ollama, mlx, llama.cpp).
 - Lives as a little thread spool in the menu bar (`NSStatusItem`, no dock icon). The spool winds — loose strands filling into a full barrel and back — while the model is thinking.
-- Default model: **qwen3.5:9b** (Qwen3.5 9B) served by Ollama. Both the model name and server URL are plain text boxes in Settings, so swap in whatever fits your machine.
+- Default model: **Qwen3.5 9B** served via Ollama (best performance-latency tradeoff tested). Both the model name and server URL are plain text boxes in Settings, so swap in whatever fits your machine.
 - **Nothing runs unless you're using it.** Ollama isn't installed as a login item. When you start a job, Spool launches `ollama serve` itself if it isn't already running, and once the job finishes it evicts the model from memory (`keep_alive: 0`) and shuts down any server it started. Your RAM is yours again the moment the document is written. If you run your own Ollama server already, Spool leaves it running and only unloads the model.
 
 ## Install
@@ -55,12 +55,12 @@ The result opens automatically when it's done. By default it's written next to t
 | Ollama (default) | `http://localhost:11434/v1` |
 | LM Studio | `http://localhost:1234/v1` |
 
-## Files
-
-- Config: `~/Library/Application Support/Spool/config.json`
-- Log: `~/Library/Logs/spool.log`
-
 ## Requirements
 
-- macOS 14+ (Apple Silicon recommended, the model wants ~7 GB of memory free)
+- macOS 14+ (Apple Silicon recommended, as it is what it was tested on, the model wants ~7 GB of memory free)
 - Swift toolchain (Xcode Command Line Tools) to build
+
+## How we use it
+Spool is a collaboration between Soumil and Sukhleen, built to bring some structure to our messy, hurried notes, including short notes that we record via TTS (text-to-speech). We generally organize ideas into Obsidian folders, and allow spool to watch the most important folder. 
+
+**Support for watching multiple folders, and queueing multiple tasks coming soon!**
