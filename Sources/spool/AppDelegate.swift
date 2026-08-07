@@ -227,7 +227,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastResultURL = outputURL
                     self.openLastItem.isHidden = false
                     self.openLastItem.title = "Open Last Result (\(outputURL.lastPathComponent))"
-                    NSWorkspace.shared.open(outputURL)
                 }
             } catch {
                 DispatchQueue.main.async {
