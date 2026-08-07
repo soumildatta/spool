@@ -33,7 +33,7 @@ ollama pull qwen3.5:9b
 
 ```sh
 spool              # start the menu bar app, then close the terminal, it keeps running
-spool run <file>   # structure a document right in the terminal
+spool run <file…>  # structure one or more documents right in the terminal
 spool stop         # quit it
 spool status       # is it running?
 ```
@@ -42,11 +42,17 @@ Then click the 🧵 in the menu bar. The top of the menu is a live status readou
 
 Three ways to feed it a draft:
 
-- **Structure a Document…**, the classic file picker (`.md`/`.txt`).
+- **Structure Documents:**, file picker (`.md`/`.txt`), which takes as many files as you want to select.
 - **Structure Newest: `<file>`**, shows up once you set a **Watched Folder** in Settings (your Obsidian vault, a notes directory, whatever). One click structures the most recently edited note in it. Hidden folders like `.obsidian` and Spool's own outputs are skipped.
-- **Drag & drop** a file, or a whole folder, which takes its newest draft, straight onto the 🧵 in the menu bar.
+- **Drag & drop** files, or whole folders, which each contribute their newest draft, straight onto the 🧵 in the menu bar.
 
-The result opens automatically when it's done. By default it's written next to the original as `<name>.structured.md`. In Settings you can instead choose to **rewrite the original file in place**, and every rewrite first saves a copy of the original to `~/Library/Application Support/Spool/backups`, so nothing gets lost.
+### Queueing
+
+Works on one job at a time, so anything you submit joins a queue. **Clear Queue** drops whatever hasn't started yet. Duplicates of a file already waiting are ignored, and a draft that turns out to be empty or unreadable is skipped rather than killing the rest of the run. The model is loaded once for the whole queue and unloaded when the last file is done.
+
+When it finishes, **Open Results** lists everything the run produced (or **Open Last Result** if there was only one). `spool run a.md b.md notes/` works through several drafts the same way.
+
+By default each result is written next to its original as `<name>.structured.md`. In Settings you can instead choose to **rewrite the original file in place**, and every rewrite first saves a copy of the original to `~/Library/Application Support/Spool/backups`, so nothing gets lost.
 
 **Settings…** lets you change the model name and server URL:
 
