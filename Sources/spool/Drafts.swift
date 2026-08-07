@@ -35,6 +35,28 @@ enum Drafts {
         return best?.url
     }
 
+    /// what a dropped, picked or typed path turned out to be
+    enum Resolution {
+        case draft(URL)
+        case emptyFolder
+        case unsupported
+        case missing
+    }
+
+    /// resolves a path to a single draft, a folder standing in for its newest one
+    static func resolve(_ url: URL) -> Resolution {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return .missing
+        }
+        if isDirectory.boolValue {
+            guard let newest = newest(in: url) else { return .emptyFolder }
+            return .draft(newest)
+        }
+        guard draftExtensions.contains(url.pathExtension.lowercased()) else { return .unsupported }
+        return .draft(url)
+    }
+
     /// a fresh `name.structured.md` next to the original, never overwriting
     static func newFileURL(for url: URL) -> URL {
         let directory = url.deletingLastPathComponent()

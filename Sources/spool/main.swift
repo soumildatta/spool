@@ -53,7 +53,7 @@ spool, turns rough idea dumps into structured documents from your menu bar 🧵
 
 usage:
   spool              start the menu bar app (keeps running after you close the terminal)
-  spool run <file>   structure a document right here in the terminal
+  spool run <file…>  structure one or more documents right here in the terminal
   spool stop         quit the menu bar app
   spool status       check whether it's running
   spool --foreground run attached to the terminal (mostly for debugging)
@@ -84,49 +84,71 @@ case "--foreground", "-f":
 
 case "run":
     guard arguments.count >= 2 else {
-        print("usage: spool run <file-or-folder>")
+        print("usage: spool run <file-or-folder> [more files…]")
         exit(1)
     }
-    var inputURL = URL(fileURLWithPath: (arguments.dropFirst().first! as NSString).expandingTildeInPath)
-    var isDirectory: ObjCBool = false
-    FileManager.default.fileExists(atPath: inputURL.path, isDirectory: &isDirectory)
-    if isDirectory.boolValue {
-        guard let newest = Drafts.newest(in: inputURL) else {
+
+    // resolve every path up front, folders standing in for their newest draft,
+    // so a bad argument is reported before the model gets loaded
+    var targets: [URL] = []
+    var skipped = 0
+    for argument in arguments.dropFirst() {
+        let inputURL = URL(fileURLWithPath: (argument as NSString).expandingTildeInPath)
+        switch Drafts.resolve(inputURL) {
+        case .draft(let url):
+            let path = url.standardizedFileURL.path
+            if targets.contains(where: { $0.standardizedFileURL.path == path }) { continue }
+            targets.append(url)
+        case .emptyFolder:
             print("No drafts (.md or .txt files) found in \(inputURL.path).")
-            exit(1)
+            skipped += 1
+        case .unsupported:
+            print("Spool works with .md and .txt files, and \(inputURL.lastPathComponent) is neither.")
+            skipped += 1
+        case .missing:
+            print("\(inputURL.path) doesn't exist.")
+            skipped += 1
         }
-        inputURL = newest
     }
-    guard let raw = try? String(contentsOf: inputURL, encoding: .utf8),
-          !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    else {
-        print("Couldn't read \(inputURL.path) (or it's empty).")
-        exit(1)
-    }
+    guard !targets.isEmpty else { exit(1) }
+
     let config = Config.load()
-    print("🧵 Structuring \(inputURL.lastPathComponent) with \(config.model)…")
     let semaphore = DispatchSemaphore(value: 0)
     Task {
         func show(_ text: String) {
             print("\r\u{1B}[K  \(text)", terminator: "")
             fflush(stdout)
         }
-        do {
-            let outputURL = try await Drafts.structureAndWrite(raw: raw, from: inputURL, config: config) { progress in
-                switch progress {
-                case .loadingModel: show("loading model into memory…")
-                case .thinking: show("thinking…")
-                case .writing(let count): show("writing · \(count) chars")
-                }
+
+        var failed = skipped
+        for (index, url) in targets.enumerated() {
+            let position = targets.count > 1 ? " [\(index + 1)/\(targets.count)]" : ""
+            guard let raw = try? String(contentsOf: url, encoding: .utf8),
+                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                print("Couldn't read \(url.path) (or it's empty).")
+                failed += 1
+                continue
             }
-            print("\nDone → \(outputURL.path)")
-            await OllamaManager.finishJob(model: config.model, serverURL: config.serverURL)
-            exit(0)
-        } catch {
-            print("\nError: \(error.localizedDescription)")
-            await OllamaManager.finishJob(model: config.model, serverURL: config.serverURL)
-            exit(1)
+            print("🧵\(position) Structuring \(url.lastPathComponent) with \(config.model)…")
+            do {
+                let outputURL = try await Drafts.structureAndWrite(raw: raw, from: url, config: config) { progress in
+                    switch progress {
+                    case .loadingModel: show("loading model into memory…")
+                    case .thinking: show("thinking…")
+                    case .writing(let count): show("writing · \(count) chars")
+                    }
+                }
+                print("\nDone → \(outputURL.path)")
+            } catch {
+                print("\nError: \(error.localizedDescription)")
+                failed += 1
+            }
         }
+
+        // the model stays loaded across the whole batch, this drops it at the end
+        await OllamaManager.finishJob(model: config.model, serverURL: config.serverURL)
+        exit(failed == 0 ? 0 : 1)
     }
     semaphore.wait()
 

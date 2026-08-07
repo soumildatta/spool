@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// transparent overlay on the status item button, catches file/folder drops
 final class DropView: NSView {
-    var onDrop: (URL) -> Void = { _ in }
+    var onDrop: ([URL]) -> Void = { _ in }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -13,35 +13,50 @@ final class DropView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        droppedURL(sender) != nil ? .copy : []
+        droppedURLs(sender).isEmpty ? [] : .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let url = droppedURL(sender) else { return false }
-        onDrop(url)
+        let urls = droppedURLs(sender)
+        guard !urls.isEmpty else { return false }
+        onDrop(urls)
         return true
     }
 
-    private func droppedURL(_ sender: NSDraggingInfo) -> URL? {
+    private func droppedURLs(_ sender: NSDraggingInfo) -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        return (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?.first
+        let objects = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options)
+        return (objects as? [URL]) ?? []
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var stateRow: NSMenuItem!
+    private var queueRow: NSMenuItem!
     private var modelRow: NSMenuItem!
     private var structureItem: NSMenuItem!
     private var newestItem: NSMenuItem!
-    private var openLastItem: NSMenuItem!
+    private var clearQueueItem: NSMenuItem!
+    private var resultsItem: NSMenuItem!
 
     private var config = Config.load()
-    private var isBusy = false
     private var pulseTimer: Timer?
     private var pulseOn = false
-    private var lastResultURL: URL?
     private var settingsController: SettingsWindowController?
+
+    // queue state, only ever touched on the main thread
+    private var pending: [URL] = []
+    private var currentURL: URL?
+    private var results: [URL] = []
+    private var failures: [String] = []
+
+    private var isBusy: Bool { currentURL != nil }
+
+    /// how many drafts this run covers, counting whatever got added mid-run
+    private var runTotal: Int {
+        results.count + failures.count + pending.count + (currentURL == nil ? 0 : 1)
+    }
 
     private static let idleText = "idle · point me at a rough draft"
 
@@ -56,13 +71,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         stateRow = infoRow(Self.idleText)
         menu.addItem(stateRow)
+        queueRow = infoRow("")
+        queueRow.isHidden = true
+        menu.addItem(queueRow)
         modelRow = infoRow("model: \(config.model)")
         menu.addItem(modelRow)
 
         menu.addItem(.separator())
 
-        structureItem = NSMenuItem(title: "Structure a Document…",
-                                   action: #selector(pickDocument), keyEquivalent: "o")
+        structureItem = NSMenuItem(title: "Structure Documents…",
+                                   action: #selector(pickDocuments), keyEquivalent: "o")
         structureItem.target = self
         menu.addItem(structureItem)
 
@@ -71,11 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         newestItem.isHidden = true
         menu.addItem(newestItem)
 
-        openLastItem = NSMenuItem(title: "Open Last Result",
-                                  action: #selector(openLastResult), keyEquivalent: "")
-        openLastItem.target = self
-        openLastItem.isHidden = true
-        menu.addItem(openLastItem)
+        clearQueueItem = NSMenuItem(title: "", action: #selector(clearQueue), keyEquivalent: "")
+        clearQueueItem.target = self
+        clearQueueItem.isHidden = true
+        menu.addItem(clearQueueItem)
+
+        resultsItem = NSMenuItem(title: "Open Last Result",
+                                 action: #selector(openLastResult), keyEquivalent: "")
+        resultsItem.target = self
+        resultsItem.isHidden = true
+        menu.addItem(resultsItem)
 
         menu.addItem(.separator())
 
@@ -106,8 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem.button else { return }
         let drop = DropView(frame: button.bounds)
         drop.autoresizingMask = [.width, .height]
-        drop.onDrop = { [weak self] url in
-            DispatchQueue.main.async { self?.handleDropped(url) }
+        drop.onDrop = { [weak self] urls in
+            DispatchQueue.main.async { self?.enqueue(urls, reportRejects: true) }
         }
         button.addSubview(drop)
     }
@@ -118,45 +141,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modelRow.title = "model: \(config.model)"
         if !isBusy { stateRow.title = Self.idleText }
 
-        if !isBusy, let folder = config.watchedFolderURL, let newest = Drafts.newest(in: folder) {
+        if pending.isEmpty {
+            queueRow.isHidden = true
+            clearQueueItem.isHidden = true
+        } else {
+            queueRow.isHidden = false
+            queueRow.title = "queued: \(pending.count) waiting"
+            clearQueueItem.isHidden = false
+            clearQueueItem.title = "Clear Queue (\(pending.count) waiting)"
+        }
+
+        structureItem.title = isBusy ? "Add Documents to Queue…" : "Structure Documents…"
+
+        if let folder = config.watchedFolderURL, let newest = Drafts.newest(in: folder) {
             newestItem.isHidden = false
-            newestItem.title = "Structure Newest: \(newest.lastPathComponent)"
+            newestItem.title = "\(isBusy ? "Queue" : "Structure") Newest: \(newest.lastPathComponent)"
             newestItem.representedObject = newest
-        } else if config.watchedFolderURL == nil {
+        } else {
             newestItem.isHidden = true
+            newestItem.representedObject = nil
         }
     }
 
+    /// job progress text, with the position in the run when there's more than one
     private func setState(_ text: String) {
-        DispatchQueue.main.async { self.stateRow.title = text }
+        DispatchQueue.main.async {
+            let total = self.runTotal
+            guard total > 1 else {
+                self.stateRow.title = text
+                return
+            }
+            let position = self.results.count + self.failures.count + 1
+            self.stateRow.title = "\(text) · \(position) of \(total)"
+        }
     }
 
     // MARK: - Actions
 
-    @objc private func pickDocument() {
-        guard !isBusy else { return }
+    @objc private func pickDocuments() {
         NSApp.activate(ignoringOtherApps: true)
 
         let panel = NSOpenPanel()
-        panel.title = "Choose a rough draft to structure"
+        panel.title = "Choose rough drafts to structure"
+        panel.message = "Pick as many as you like, Spool works through them one at a time."
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         var types: [UTType] = [.plainText, .text]
         if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
         panel.allowedContentTypes = types
         panel.level = .floating
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        structure(url)
+        guard panel.runModal() == .OK else { return }
+        enqueue(panel.urls, reportRejects: true)
     }
 
     @objc private func structureNewest() {
-        guard !isBusy, let url = newestItem.representedObject as? URL else { return }
-        structure(url)
+        guard let url = newestItem.representedObject as? URL else { return }
+        enqueue([url], reportRejects: true)
+    }
+
+    @objc private func clearQueue() {
+        pending.removeAll()
     }
 
     @objc private func openLastResult() {
-        if let url = lastResultURL { NSWorkspace.shared.open(url) }
+        if let url = results.last { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func openResult(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func openAllResults() {
+        results.forEach { NSWorkspace.shared.open($0) }
     }
 
     @objc private func showSettings() {
@@ -172,39 +229,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.window?.makeKeyAndOrderFront(nil)
     }
 
-    private func handleDropped(_ url: URL) {
-        guard !isBusy else { return }
-        var isDirectory: ObjCBool = false
-        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        if isDirectory.boolValue {
-            if let newest = Drafts.newest(in: url) {
-                structure(newest)
-            } else {
-                showError("No drafts (.md or .txt files) found in \(url.lastPathComponent).")
+    // MARK: - Queue
+
+    /// adds drafts to the back of the queue, starting the run if nothing is going.
+    /// folders stand in for their newest draft, same as a single drop always did.
+    private func enqueue(_ urls: [URL], reportRejects: Bool) {
+        var rejects: [String] = []
+        var added = 0
+
+        for url in urls {
+            switch Drafts.resolve(url) {
+            case .draft(let draft):
+                guard !isQueued(draft) else { continue }
+                pending.append(draft)
+                added += 1
+            case .emptyFolder:
+                rejects.append("No drafts (.md or .txt files) found in \(url.lastPathComponent).")
+            case .unsupported:
+                rejects.append("Spool works with .md and .txt files, and \(url.lastPathComponent) is neither.")
+            case .missing:
+                rejects.append("\(url.lastPathComponent) isn't there anymore.")
             }
-        } else if Drafts.draftExtensions.contains(url.pathExtension.lowercased()) {
-            structure(url)
-        } else {
-            showError("Spool works with .md and .txt files, and \(url.lastPathComponent) is neither.")
         }
+
+        if added > 0 && !isBusy { beginRun() }
+        if reportRejects && !rejects.isEmpty { showError(rejects.joined(separator: "\n")) }
     }
 
-    // MARK: - Processing
+    private func isQueued(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        if currentURL?.standardizedFileURL.path == path { return true }
+        return pending.contains { $0.standardizedFileURL.path == path }
+    }
 
-    private func structure(_ url: URL) {
-        let raw: String
-        do {
-            raw = try String(contentsOf: url, encoding: .utf8)
-        } catch {
-            showError("Couldn't read \(url.lastPathComponent): \(error.localizedDescription)")
+    /// fresh run, so the results and failures from the last one stop being shown
+    private func beginRun() {
+        results.removeAll()
+        failures.removeAll()
+        resultsItem.isHidden = true
+        resultsItem.submenu = nil
+        startPulse()
+        advanceQueue()
+    }
+
+    /// takes the next draft off the queue and starts it, skipping ones that
+    /// can't be read. ends the run when nothing is left.
+    private func advanceQueue() {
+        while !pending.isEmpty {
+            let url = pending.removeFirst()
+            let raw: String
+            do {
+                raw = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                continue
+            }
+            guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                failures.append("\(url.lastPathComponent) is empty, nothing to structure.")
+                continue
+            }
+            run(raw: raw, from: url)
             return
         }
-        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showError("\(url.lastPathComponent) is empty, nothing to structure.")
-            return
-        }
+        finishRun()
+    }
 
-        setBusy(true)
+    private func run(raw: String, from url: URL) {
+        currentURL = url
         setState("waking up the model…")
         let name = url.lastPathComponent
         let jobConfig = config
@@ -223,20 +314,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.setBusy(false)
-                    self.lastResultURL = outputURL
-                    self.openLastItem.isHidden = false
-                    self.openLastItem.title = "Open Last Result (\(outputURL.lastPathComponent))"
+                    self.currentURL = nil
+                    self.results.append(outputURL)
+                    self.refreshResults()
+                    self.advanceQueue()
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.setBusy(false)
-                    self?.showError(error.localizedDescription)
+                    guard let self else { return }
+                    self.currentURL = nil
+                    self.failures.append("\(name): \(error.localizedDescription)")
+                    self.advanceQueue()
                 }
             }
-            // job's done, unload the model and kill the server if we started it
+        }
+    }
+
+    /// queue is drained, so let go of the model and report anything that failed
+    private func finishRun() {
+        stopPulse()
+        let jobConfig = config
+        Task.detached {
             await OllamaManager.finishJob(model: jobConfig.model, serverURL: jobConfig.serverURL)
         }
+
+        guard !failures.isEmpty else { return }
+        let heading = failures.count == 1 ? "" : "\(failures.count) drafts didn't make it:\n\n"
+        showError(heading + failures.joined(separator: "\n"))
+        failures.removeAll()
+    }
+
+    /// one result opens directly, several get a submenu listing them
+    private func refreshResults() {
+        guard !results.isEmpty else {
+            resultsItem.isHidden = true
+            return
+        }
+        resultsItem.isHidden = false
+
+        guard results.count > 1 else {
+            resultsItem.submenu = nil
+            resultsItem.action = #selector(openLastResult)
+            resultsItem.target = self
+            resultsItem.title = "Open Last Result (\(results[0].lastPathComponent))"
+            return
+        }
+
+        resultsItem.action = nil
+        resultsItem.title = "Open Results (\(results.count))"
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for url in results {
+            let item = NSMenuItem(title: url.lastPathComponent, action: #selector(openResult(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            submenu.addItem(item)
+        }
+        submenu.addItem(.separator())
+        let all = NSMenuItem(title: "Open All", action: #selector(openAllResults), keyEquivalent: "")
+        all.target = self
+        submenu.addItem(all)
+        resultsItem.submenu = submenu
     }
 
     private static func pretty(_ count: Int) -> String {
@@ -245,23 +383,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - UI state
 
-    private func setBusy(_ busy: Bool) {
-        isBusy = busy
-        structureItem.isEnabled = !busy
-        newestItem.isEnabled = !busy
-        if busy {
-            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.pulseOn.toggle()
-                self.setIcon(wound: self.pulseOn)
-            }
-        } else {
-            pulseTimer?.invalidate()
-            pulseTimer = nil
-            pulseOn = false
-            setIcon(wound: false)
-            stateRow.title = Self.idleText
+    private func startPulse() {
+        guard pulseTimer == nil else { return }
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.pulseOn.toggle()
+            self.setIcon(wound: self.pulseOn)
         }
+    }
+
+    private func stopPulse() {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        pulseOn = false
+        setIcon(wound: false)
+        stateRow.title = Self.idleText
     }
 
     private func setIcon(wound: Bool) {
