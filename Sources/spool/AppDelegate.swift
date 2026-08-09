@@ -223,6 +223,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.config = newConfig
             newConfig.save()
             self.settingsController?.close()
+        } onClose: { [weak self] in
+            // listing and downloading models needs a server, so settings may have started one. let it go again unless a job is still using it.
+            guard let self, !self.isBusy else { return }
+            OllamaManager.shutdownIfSpawned()
         }
         settingsController = controller
         controller.showWindow(nil)
