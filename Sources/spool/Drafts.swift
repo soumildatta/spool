@@ -89,6 +89,8 @@ enum Drafts {
     static func structureAndWrite(raw: String, from url: URL, config: Config,
                                   onProgress: @escaping (LLMProgress) -> Void) async throws -> URL {
         try await OllamaManager.ensureRunning(serverURL: config.serverURL)
+        // fail early and readably when the configured model was never pulled, instead of letting the server answer with a bare 404 mid-generation
+        try await ModelLibrary.verifyAvailable(model: config.model, serverURL: config.serverURL)
         onProgress(.loadingModel)
         let document = try await LLMClient(config: config).structure(raw, onProgress: onProgress)
         let outputURL: URL

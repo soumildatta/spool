@@ -10,7 +10,7 @@ Named for the thing that takes loose, tangled thread and winds it into something
 
 - Native Swift, single SPM executable, no Electron, no cloud. Everything runs against a **local** OpenAI-compatible model server (LM Studio, Ollama, mlx, llama.cpp).
 - Lives as a little thread spool in the menu bar (`NSStatusItem`, no dock icon). The spool winds — loose strands filling into a full barrel and back — while the model is thinking.
-- Default model: **Qwen3.5 9B** served via Ollama (best performance-latency tradeoff tested). Both the model name and server URL are plain text boxes in Settings, so swap in whatever fits your machine.
+- Default model: **Qwen3.5 9B** served via Ollama (best performance-latency tradeoff tested). Settings lists the models Ollama has installed and can download or delete them in place, so swap in whatever fits your machine.
 - **Nothing runs unless you're using it.** Ollama isn't installed as a login item. When you start a job, Spool launches `ollama serve` itself if it isn't already running, and once the job finishes it evicts the model from memory (`keep_alive: 0`) and shuts down any server it started. Your RAM is yours again the moment the document is written. If you run your own Ollama server already, Spool leaves it running and only unloads the model.
 
 ## Install
@@ -54,7 +54,9 @@ When it finishes, **Open Results** lists everything the run produced (or **Open 
 
 By default each result is written next to its original as `<name>.structured.md`. In Settings you can instead choose to **rewrite the original file in place**, and every rewrite first saves a copy of the original to `~/Library/Application Support/Spool/backups`, so nothing gets lost.
 
-**Settings…** lets you change the model name and server URL:
+**Settings** lets you change the model and server URL.
+
+When you're on a local Ollama, the model field is a list of what's installed. **+** downloads any model from [ollama.com/library](https://ollama.com/library) with a progress bar, **−** deletes the selected one from disk.
 
 | Server | URL |
 |---|---|
